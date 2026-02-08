@@ -141,9 +141,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📧 Contact
 
-Your Name - your.email@example.com
+Daniel Mai - danthienphuc@gmail.com
 
-Project Link: [https://github.com/YOUR_USERNAME/learning-app](https://github.com/YOUR_USERNAME/learning-app)
+Project Link: [https://github.com/danthienphuc/learning-app](https://github.com/danthienphuc/learning-app)
+
+Learning material: https://drive.google.com/drive/folders/1_k1pKP56u_tfEVQkMAlDql_zFbt6IsI8?usp=drive_link
 
 ---
 
