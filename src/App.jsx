@@ -1,6 +1,48 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, BookOpen, Volume2, FileText, ArrowLeft, SkipBack, SkipForward, Menu, Clock, Play, Pause, Settings, FolderPlus, Trash2, X, RefreshCw, ChevronRight, ChevronDown, Folder, FolderOpen, RotateCcw, RotateCw, Volume, Volume1, VolumeX, Rewind, FastForward } from 'lucide-react';
+import { 
+  Search, BookOpen, Volume2, FileText, ArrowLeft, SkipBack, SkipForward, 
+  Menu, Play, Pause, Settings, FolderPlus, Trash2, X, RefreshCw, 
+  ChevronRight, ChevronDown, Folder, FolderOpen, RotateCcw, RotateCw, 
+  Volume, Volume1, VolumeX, LayoutGrid, List, FolderTree, Loader2, HardDrive
+} from 'lucide-react';
 import { cn } from './lib/utils';
+
+// Helper: Màu nền phân cấp
+const getDepthColor = (level) => {
+  const opacities = [0, 0.03, 0.06, 0.1, 0.15];
+  const opacity = opacities[Math.min(level, opacities.length - 1)];
+  return `rgba(59, 130, 246, ${opacity})`;
+};
+
+// Helper: Tự động tạo màu nền gradient từ tên
+const getGradientFromName = (name) => {
+  const gradients = [
+    'from-blue-500 to-indigo-600', 'from-emerald-400 to-teal-600',
+    'from-violet-500 to-fuchsia-600', 'from-rose-400 to-orange-500',
+    'from-amber-400 to-orange-500', 'from-cyan-500 to-blue-600',
+    'from-pink-500 to-rose-600'
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return gradients[Math.abs(hash) % gradients.length];
+};
+
+// Helper: Sắp xếp tự nhiên (1, 2, 3, 10 thay vì 1, 10, 2)
+const naturalSort = (a, b) => {
+  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+};
+
+// Helper: Lấy URL truy cập file trực tiếp
+const getLocalFileUrl = (filePath) => {
+  if (!filePath) return '';
+  const normalized = filePath.replace(/\\/g, '/');
+  const parts = normalized.split('/');
+  const encodedParts = parts.map((part, index) => {
+    if (index === 0 && part.includes(':')) return part;
+    return encodeURIComponent(part);
+  });
+  return `file:///${encodedParts.join('/')}`;
+};
 
 function App() {
   const [trees, setTrees] = useState([]);
@@ -10,41 +52,51 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState({ scanFolders: [] });
 
+  // === CÁC STATE CỦA DASHBOARD ĐƯỢC ĐƯA LÊN ĐÂY ĐỂ GIỮ NGUYÊN VỊ TRÍ KHI QUAY LẠI ===
+  const [dashSearch, setDashSearch] = useState('');
+  const [dashViewMode, setDashViewMode] = useState('grid');
+  const [dashCurrentPath, setDashCurrentPath] = useState([]);
+  const [dashExpandedFolders, setDashExpandedFolders] = useState({});
+
   const loadTrees = async (folders = null) => {
     setLoading(true);
     if (window.api) {
       try {
-        const loadedTrees = await window.api.scanFoldersTree(folders);
-        // Load thumbnails for root level items
+        const pathsToScan = folders || settings.scanFolders;
+        const loadedTrees = await window.api.scanFoldersTree(pathsToScan);
+        
+        let flatRoots = [];
+        loadedTrees.forEach(tree => {
+          if (!tree) return;
+          if (tree.children && tree.children.length > 0) flatRoots.push(...tree.children);
+          else if (tree.docs > 0 || tree.audio > 0) flatRoots.push(tree);
+        });
+        
         const treesWithThumbs = await Promise.all(
-          loadedTrees.map(async (tree) => {
-            return await loadThumbnailsRecursive(tree);
-          })
+          flatRoots.map(async (tree) => await loadThumbnailsRecursive(tree))
         );
-        setTrees(treesWithThumbs);
-      } catch (error) {
-        console.error("Failed to load trees", error);
-      }
+        // Sắp xếp thư mục gốc
+        setTrees(treesWithThumbs.sort(naturalSort));
+        // Reset lại vị trí path khi có refresh lại hệ thống file
+        setDashCurrentPath([]);
+        setDashExpandedFolders({});
+      } catch (error) { console.error("Failed to load trees", error); }
     }
     setLoading(false);
   };
 
   const loadThumbnailsRecursive = async (node) => {
     if (!node) return node;
-
     try {
-      if (node.docs > 0 || node.audio > 0) {
-        const thumb = await window.api.getThumbnail(node.path);
-        node.thumbnailData = thumb;
+      if ((node.docs > 0 || node.audio > 0) && !node.thumbnailData) {
+        node.thumbnailData = await window.api.getThumbnail(node.path);
       }
-    } catch (e) { }
+    } catch (e) {}
 
-    if (node.children) {
-      node.children = await Promise.all(
-        node.children.map(child => loadThumbnailsRecursive(child))
-      );
+    if (node.children && node.children.length > 0) {
+      node.children = await Promise.all(node.children.map(child => loadThumbnailsRecursive(child)));
+      node.children.sort(naturalSort); // Đảm bảo mọi nhánh đều sắp xếp đúng
     }
-
     return node;
   };
 
@@ -54,9 +106,7 @@ function App() {
         const savedSettings = await window.api.getSettings();
         setSettings(savedSettings);
         await loadTrees(savedSettings.scanFolders);
-      } else {
-        setLoading(false);
-      }
+      } else { setLoading(false); }
     }
     init();
   }, []);
@@ -68,9 +118,7 @@ function App() {
         const details = await window.api.getSetDetailsGrouped(set.path);
         setSelectedSet({ ...set, ...details });
         setView('learning');
-      } catch (e) {
-        console.error("Failed to load details", e);
-      }
+      } catch (e) { console.error("Failed to load details", e); }
     }
     setLoading(false);
   };
@@ -80,850 +128,641 @@ function App() {
     setSelectedSet(null);
   };
 
-  const handleSettingsSave = async (newSettings) => {
-    if (window.api) {
-      await window.api.saveSettings(newSettings);
-      setSettings(newSettings);
-      await loadTrees(newSettings.scanFolders);
-    }
-    setShowSettings(false);
-  };
-
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-background text-foreground flex-col gap-4">
-        <div className="animate-spin rounded-full h-16 w-16 border-4 border-primary border-t-transparent"></div>
-        <p className="text-muted-foreground animate-pulse">Loading resources...</p>
+      <div className="flex items-center justify-center h-screen bg-slate-50 dark:bg-slate-950 flex-col gap-4">
+        <Loader2 className="h-12 w-12 text-primary animate-spin" />
+        <p className="text-slate-500 font-medium animate-pulse">Đang đồng bộ thư viện...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/20">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans selection:bg-primary/20 transition-colors duration-300">
       {view === 'dashboard' && (
-        <Dashboard
-          trees={trees}
-          onSetClick={handleSetClick}
+        <Dashboard 
+          trees={trees} 
+          onSetClick={handleSetClick} 
           onSettingsClick={() => setShowSettings(true)}
-          onRefresh={() => loadTrees(settings.scanFolders)}
+          onRefresh={() => loadTrees()}
+          search={dashSearch} setSearch={setDashSearch}
+          viewMode={dashViewMode} setViewMode={setDashViewMode}
+          currentPath={dashCurrentPath} setCurrentPath={setDashCurrentPath}
+          expandedFolders={dashExpandedFolders} setExpandedFolders={setDashExpandedFolders}
         />
       )}
       {view === 'learning' && selectedSet && (
-        <LearningView set={selectedSet} onBack={handleBack} />
+        <LearningView set={selectedSet} onBack={handleBack} onReloadSet={handleSetClick} />
       )}
       {showSettings && (
-        <SettingsModal
-          settings={settings}
-          onSave={handleSettingsSave}
-          onClose={() => setShowSettings(false)}
+        <SettingsModal 
+          settings={settings} 
+          onSave={async (s) => {
+            await window.api.saveSettings(s);
+            setSettings(s);
+            setShowSettings(false);
+            loadTrees(s.scanFolders);
+          }} 
+          onClose={() => setShowSettings(false)} 
         />
       )}
+    </div>
+  );
+}
+
+function Dashboard({ 
+  trees, onSetClick, onSettingsClick, onRefresh,
+  search, setSearch, viewMode, setViewMode, currentPath, setCurrentPath, expandedFolders, setExpandedFolders 
+}) {
+  const toggleFolder = (id) => setExpandedFolders(prev => ({ ...prev, [id]: !prev[id] }));
+  const handleEnterFolder = (node) => setCurrentPath(prev => [...prev, node]);
+  const handleGoBack = () => setCurrentPath(prev => prev.slice(0, -1));
+
+  const currentNodes = currentPath.length > 0 ? (currentPath[currentPath.length - 1].children || []) : trees;
+  const filteredNodes = currentNodes.filter(node => node.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="p-6 max-w-[1600px] mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+        <div>
+          <h1 className="text-4xl font-black tracking-tight bg-gradient-to-br from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+            My Library
+          </h1>
+          <p className="text-slate-500 text-sm mt-1">Quản lý kho tàng kiến thức của bạn</p>
+        </div>
+        
+        <div className="flex items-center gap-3 w-full md:w-auto bg-white dark:bg-slate-900 p-1.5 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800">
+          <div className="relative flex-1 md:w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
+            <input 
+              type="text" 
+              placeholder="Tìm tài liệu..." 
+              className="w-full pl-10 pr-4 py-2 bg-transparent border-none focus:ring-0 text-sm outline-none"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <div className="h-8 w-[1px] bg-slate-200 dark:bg-slate-800 mx-1" />
+          <div className="flex gap-1">
+            <button onClick={() => setViewMode('grid')} className={cn("p-2 rounded-xl transition-all", viewMode === 'grid' ? "bg-blue-100 text-blue-600" : "hover:bg-slate-100")} title="Chế độ Lưới"><LayoutGrid size={18} /></button>
+            <button onClick={() => setViewMode('list')} className={cn("p-2 rounded-xl transition-all", viewMode === 'list' ? "bg-blue-100 text-blue-600" : "hover:bg-slate-100")} title="Chế độ Danh sách"><List size={18} /></button>
+            <button onClick={() => { setViewMode('tree'); setCurrentPath([]); }} className={cn("p-2 rounded-xl transition-all", viewMode === 'tree' ? "bg-blue-100 text-blue-600" : "hover:bg-slate-100")} title="Chế độ Cây thư mục"><FolderTree size={18} /></button>
+          </div>
+          <div className="h-8 w-[1px] bg-slate-200 dark:bg-slate-800 mx-1" />
+          <button onClick={onRefresh} className="p-2 hover:bg-slate-100 rounded-xl transition-all text-slate-500"><RefreshCw size={18} /></button>
+          <button onClick={onSettingsClick} className="p-2 hover:bg-slate-100 rounded-xl transition-all text-slate-500"><Settings size={18} /></button>
+        </div>
+      </header>
+
+      {/* Breadcrumbs cho Grid và List */}
+      {viewMode !== 'tree' && currentPath.length > 0 && (
+        <nav className="flex items-center gap-2 mb-6 text-sm overflow-x-auto pb-2 scrollbar-hide">
+          <button onClick={() => setCurrentPath([])} className="flex items-center gap-1 text-slate-500 hover:text-blue-600 transition-colors px-2 py-1 rounded-lg hover:bg-blue-50">
+            <HardDrive size={14} /> Library
+          </button>
+          {currentPath.map((node, i) => (
+            <div key={node.id} className="flex items-center gap-2 shrink-0">
+              <ChevronRight size={14} className="text-slate-300" />
+              <button onClick={() => setCurrentPath(currentPath.slice(0, i + 1))} className={cn("px-2 py-1 rounded-lg transition-all", i === currentPath.length - 1 ? "bg-blue-600 text-white font-medium" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600")}>
+                {node.name}
+              </button>
+            </div>
+          ))}
+        </nav>
+      )}
+
+      {trees.length === 0 ? (
+        <EmptyState onSettings={onSettingsClick} />
+      ) : (
+        <div className={cn(viewMode === 'grid' ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6" : "space-y-3")}>
+          
+          {/* Nút Back cho Grid */}
+          {viewMode === 'grid' && currentPath.length > 0 && (
+            <div onClick={handleGoBack} className="flex flex-col items-center justify-center p-4 rounded-3xl border-2 border-dashed border-slate-200 hover:border-blue-400 hover:bg-blue-50/50 cursor-pointer transition-all group aspect-[4/5]">
+              <div className="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-400 group-hover:bg-blue-100 group-hover:text-blue-600 transition-all mb-3"><ArrowLeft size={32} /></div>
+              <span className="font-bold text-slate-400 group-hover:text-blue-600">Quay lại</span>
+            </div>
+          )}
+
+          {/* Nút Back cho List */}
+          {viewMode === 'list' && currentPath.length > 0 && (
+            <div onClick={handleGoBack} className="flex items-center gap-4 p-3 rounded-2xl border-2 border-dashed border-slate-200 hover:border-blue-400 hover:bg-blue-50 cursor-pointer transition-all group">
+              <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 group-hover:bg-blue-100 group-hover:text-blue-600"><ArrowLeft size={20} /></div>
+              <span className="font-bold text-slate-500 group-hover:text-blue-600 flex-1">Quay lại thư mục cha</span>
+            </div>
+          )}
+
+          {(viewMode === 'tree' ? trees : filteredNodes).map(node => (
+            <TreeNode 
+              key={node.id} node={node} level={viewMode === 'tree' ? 0 : currentPath.length} viewMode={viewMode}
+              onSetClick={onSetClick} onEnterFolder={handleEnterFolder} expandedFolders={expandedFolders} toggleFolder={toggleFolder}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TreeNode({ node, level, viewMode, onSetClick, onEnterFolder, expandedFolders, toggleFolder }) {
+  const isExpanded = expandedFolders[node.id];
+  const hasChildren = node.children && node.children.length > 0;
+  const isLearningMaterial = node.docs > 0 || node.audio > 0;
+  const cardGradient = (!node.thumbnailData && !hasChildren && isLearningMaterial) ? getGradientFromName(node.name) : '';
+
+  const handleClick = (e) => {
+    if (hasChildren) {
+      if (viewMode === 'tree') toggleFolder(node.id);
+      else onEnterFolder(node);
+    } else if (isLearningMaterial) onSetClick(node);
+  };
+
+  const handleStudyClick = (e) => {
+    e.stopPropagation(); 
+    onSetClick(node);
+  };
+
+  if (viewMode === 'grid') {
+    return (
+      <div onClick={handleClick} className="group relative flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl overflow-hidden hover:shadow-2xl hover:shadow-blue-500/10 hover:-translate-y-1 transition-all cursor-pointer aspect-[4/5]">
+        <div className={cn("relative flex-1 overflow-hidden flex items-center justify-center", node.thumbnailData ? "bg-slate-100" : (cardGradient ? `bg-gradient-to-br ${cardGradient}` : "bg-slate-100 dark:bg-slate-800"))}>
+          {node.thumbnailData ? <img src={node.thumbnailData} alt="" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" /> : (!hasChildren && isLearningMaterial) ? <BookOpen size={56} className="text-white opacity-90 drop-shadow-md transition-transform duration-500 group-hover:scale-110" /> : <Folder size={64} className="text-amber-400 fill-amber-400/20" />}
+          {node.audio > 0 && <div className="absolute top-3 right-3 bg-white/20 backdrop-blur-md text-white p-1.5 rounded-xl shadow-lg border border-white/20"><Volume2 size={14} /></div>}
+          {isLearningMaterial && (
+            <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+              <button onClick={handleStudyClick} className="px-4 py-2.5 bg-white text-slate-900 font-bold text-xs rounded-xl shadow-xl flex items-center gap-2 hover:scale-105 transition-all">
+                <BookOpen size={16} className="text-blue-600" /> HỌC NGAY
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="p-4 pt-3">
+          <h3 className="font-bold text-sm line-clamp-2 group-hover:text-blue-600 transition-colors h-10" title={node.name}>{node.name}</h3>
+          <div className="flex items-center justify-between mt-2 text-[10px] text-slate-400 font-medium">
+             <div className="flex gap-2">
+                {node.docs > 0 && <span className="flex items-center gap-0.5"><FileText size={12}/>{node.docs}</span>}
+                {node.audio > 0 && <span className="flex items-center gap-0.5"><Volume2 size={12}/>{node.audio}</span>}
+             </div>
+             <span>{(!hasChildren && isLearningMaterial) ? 'Bài học' : 'Thư mục'}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Chế độ List (phẳng) hoặc Tree (đệ quy)
+  return (
+    <div className="w-full">
+      <div 
+        onClick={handleClick}
+        className={cn(
+          "flex items-center gap-4 p-3 rounded-2xl border transition-all cursor-pointer group relative",
+          isLearningMaterial && !hasChildren ? "bg-white border-slate-200 hover:border-blue-400 hover:shadow-md" : "bg-slate-50/50 border-transparent hover:bg-slate-100"
+        )}
+        style={{ marginLeft: viewMode === 'tree' ? level * 24 : 0, backgroundColor: viewMode === 'tree' ? getDepthColor(level) : '' }}
+      >
+        {(viewMode === 'tree' && hasChildren) ? (
+          <button className="p-1 hover:bg-slate-200 rounded-lg">{isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>
+        ) : <div className={viewMode === 'tree' ? "w-7" : "hidden"} />}
+
+        <div className={cn("w-12 h-12 rounded-xl overflow-hidden shrink-0 flex items-center justify-center shadow-sm", node.thumbnailData ? "bg-slate-100" : (cardGradient ? `bg-gradient-to-br ${cardGradient}` : "bg-slate-100 dark:bg-slate-800"))}>
+          {node.thumbnailData ? <img src={node.thumbnailData} alt="" className="w-full h-full object-cover" /> : (!hasChildren && isLearningMaterial) ? <BookOpen size={20} className="text-white" /> : <Folder size={24} className="text-amber-500 fill-amber-500/10" />}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <h3 className="font-bold truncate group-hover:text-blue-600 transition-colors">{node.name}</h3>
+          <p className="text-xs text-slate-400">
+            {node.docs > 0 && `${node.docs} tài liệu · `}
+            {node.audio > 0 && `${node.audio} file nghe`}
+            {node.docs === 0 && node.audio === 0 && "Thư mục rỗng"}
+          </p>
+        </div>
+
+        {isLearningMaterial && (
+          <button onClick={handleStudyClick} className="hidden md:flex opacity-0 group-hover:opacity-100 px-4 py-1.5 bg-blue-600 text-white text-[10px] font-bold rounded-full tracking-wider transition-all z-10 hover:scale-105 shadow-md">
+            HỌC NGAY
+          </button>
+        )}
+      </div>
+
+      {viewMode === 'tree' && isExpanded && hasChildren && (
+        <div className="mt-2 space-y-2">
+          {node.children.map(child => (
+            <TreeNode key={child.id} node={child} level={level + 1} viewMode="tree" onSetClick={onSetClick} expandedFolders={expandedFolders} toggleFolder={toggleFolder} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LearningView({ set, onBack, onReloadSet }) {
+  const [currentDoc, setCurrentDoc] = useState(null);
+  const [currentAudio, setCurrentAudio] = useState(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [collapsedGroups, setCollapsedGroups] = useState({});
+
+  // === RESIZE SIDEBAR LOGIC ===
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem('learning_sidebar_width');
+    return saved ? parseInt(saved, 10) : 340; // Default width 340px
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  const startResizing = (e) => {
+    e.preventDefault();
+    setIsResizing(true);
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isResizing) return;
+      // Calculate width from the right side of the screen
+      const newWidth = window.innerWidth - e.clientX;
+      // Constraints: Min 200px, Max 60% of window width
+      if (newWidth > 200 && newWidth < window.innerWidth * 0.6) {
+        setSidebarWidth(newWidth);
+      }
+    };
+    
+    const handleMouseUp = () => {
+      if (isResizing) {
+        setIsResizing(false);
+        localStorage.setItem('learning_sidebar_width', sidebarWidth);
+      }
+    };
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing, sidebarWidth]);
+  // ==============================
+
+  useEffect(() => {
+    if (set.docs && set.docs.length > 0) {
+      const sortedDocs = [...set.docs].sort(naturalSort);
+      const firstPdf = sortedDocs.find(d => d.name.toLowerCase().endsWith('.pdf'));
+      setCurrentDoc(firstPdf || sortedDocs[0]);
+    } else setCurrentDoc(null);
+    
+    if (set.audio && set.audio.length > 0) setCurrentAudio([...set.audio].sort(naturalSort)[0]);
+    else setCurrentAudio(null);
+
+    setCollapsedGroups({}); // Mặc định mở toàn bộ khi load set mới
+  }, [set]);
+
+  // Logic kiểm tra xem Group này có đang bị ẩn bởi cha của nó không (Tree Behavior)
+  const isGroupVisible = (folderPath) => {
+    if (folderPath === '/') return true;
+    const parts = folderPath.split('/');
+    let checkPath = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      checkPath = checkPath ? `${checkPath}/${parts[i]}` : parts[i];
+      if (collapsedGroups[checkPath]) return false; // Thư mục cha đang bị gập -> Con bị ẩn
+    }
+    return true;
+  };
+
+  const toggleGroupCollapse = (folderPath) => setCollapsedGroups(prev => ({ ...prev, [folderPath]: !prev[folderPath] }));
+
+  return (
+    <div className="h-screen flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden animate-in fade-in duration-500">
+      <header className="h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center px-4 justify-between z-30 shadow-sm shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full transition-all"><ArrowLeft size={20} /></button>
+          <div className="min-w-0">
+            <h2 className="font-black text-sm md:text-base truncate">{set.name}</h2>
+            <div className="flex items-center gap-2 text-[10px] text-slate-400 uppercase font-bold tracking-widest">
+              <span className="flex items-center gap-1"><FileText size={10}/> {set.docs?.length || 0}</span><span>•</span>
+              <span className="flex items-center gap-1"><Volume2 size={10}/> {set.audio?.length || 0}</span>
+            </div>
+          </div>
+        </div>
+        <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className={cn("p-2 rounded-xl transition-all", isSidebarOpen ? "bg-slate-100 text-slate-900" : "hover:bg-slate-100")}><Menu size={20} /></button>
+      </header>
+
+      {/* Main Layout Area - Using Flexbox instead of Fixed Sidebar for easy resizing */}
+      <main className="flex-1 flex overflow-hidden relative w-full">
+        
+        {/* Left Area (Doc + Audio) */}
+        <div className="flex-1 flex flex-col min-w-0 relative">
+          
+          {/* OVERLAY FIX: Khi đang kéo thả resize, Iframe PDF sẽ nuốt mất sự kiện chuột. 
+              Lớp div tàng hình này giúp che lại Iframe tạm thời để quá trình resize mượt mà */}
+          {isResizing && <div className="absolute inset-0 z-50 cursor-col-resize bg-transparent" />}
+
+          <div className="flex-1 bg-slate-200/50 dark:bg-slate-900/50 overflow-hidden relative">
+            {currentDoc ? <DocViewer doc={currentDoc} /> : (
+              <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-4 p-8 text-center">
+                <BookOpen size={80} strokeWidth={1} className="opacity-20" />
+                <p className="max-w-xs">Chọn tài liệu từ danh sách bên phải để bắt đầu học tập.</p>
+              </div>
+            )}
+          </div>
+          
+          <AudioBar 
+            currentAudio={currentAudio} 
+            playlist={set.audio} 
+            onNext={() => {
+              if(!set.audio || !currentAudio) return;
+              const sorted = [...set.audio].sort(naturalSort);
+              const idx = sorted.findIndex(a => a.path === currentAudio.path);
+              if (idx < sorted.length - 1) setCurrentAudio(sorted[idx+1]);
+            }}
+            onPrev={() => {
+              if(!set.audio || !currentAudio) return;
+              const sorted = [...set.audio].sort(naturalSort);
+              const idx = sorted.findIndex(a => a.path === currentAudio.path);
+              if (idx > 0) setCurrentAudio(sorted[idx-1]);
+            }}
+          />
+        </div>
+
+        {/* Resizer Handle (Chỉ hiện trên Desktop và khi Sidebar đang mở) */}
+        {isSidebarOpen && (
+          <div 
+            onMouseDown={startResizing}
+            className="hidden lg:block w-1.5 hover:w-2 bg-slate-200 dark:bg-slate-800 hover:bg-blue-500 active:bg-blue-600 cursor-col-resize shrink-0 z-40 transition-colors"
+            title="Kéo để thay đổi kích thước"
+          />
+        )}
+
+        {/* Right Sidebar - Cấu trúc Tree */}
+        <aside 
+          style={{ width: `${sidebarWidth}px` }}
+          className={cn(
+            "fixed inset-y-16 right-0 bg-white dark:bg-slate-900 flex flex-col shadow-2xl lg:shadow-none lg:static shrink-0 z-40 max-w-[85vw]",
+            isSidebarOpen ? "translate-x-0" : "translate-x-full lg:hidden",
+            isResizing ? "transition-none" : "transition-transform duration-300 ease-in-out"
+          )}
+        >
+          <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between shadow-sm z-10 bg-white dark:bg-slate-900 shrink-0">
+            <span className="text-[11px] font-black uppercase tracking-tighter text-slate-400">Nội dung bài học</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-1 scrollbar-thin">
+            {set.structure && set.structure.map((group, i) => {
+              if (!isGroupVisible(group.folder)) return null; // Ẩn hoàn toàn nếu cha bị gập
+              
+              const isCollapsed = collapsedGroups[group.folder];
+              const sortedDocs = [...group.docs].sort(naturalSort);
+              const sortedAudio = [...group.audio].sort(naturalSort);
+              
+              const depth = group.folder === '/' ? 0 : (group.folder.match(/\//g) || []).length;
+              const folderName = group.folder === '/' ? 'Thư mục gốc' : group.folder.split('/').pop();
+
+              return (
+                <div key={i} className="space-y-1 mb-2">
+                  <div 
+                    onClick={() => toggleGroupCollapse(group.folder)}
+                    className="group relative flex items-center gap-2 p-2 rounded-xl cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                    style={{ marginLeft: `${depth * 14}px` }}
+                  >
+                    <button className="text-slate-400 group-hover:text-blue-600 transition-colors">
+                      {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                    </button>
+                    <FolderOpen size={16} className="text-amber-500 shrink-0" /> 
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300 tracking-wide truncate pr-20" title={group.folder}>
+                      {folderName}
+                    </span>
+
+                    {/* Reload Set Button (Hover to see) */}
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // Nạp lại màn hình Learning với thư mục mới này
+                        onReloadSet({ path: group.folderPath, name: folderName });
+                      }}
+                      className="absolute right-2 opacity-0 group-hover:opacity-100 px-3 py-1.5 bg-blue-600 text-white text-[9px] font-bold rounded-lg shadow-md hover:bg-blue-700 hover:scale-105 transition-all"
+                    >
+                      HỌC NGAY
+                    </button>
+                  </div>
+
+                  {!isCollapsed && (
+                    <div className="space-y-1 py-1" style={{ marginLeft: `${(depth * 14) + 26}px` }}>
+                      {sortedDocs.map(doc => (
+                        <button 
+                          key={doc.path} onClick={() => setCurrentDoc(doc)}
+                          className={cn("w-full flex items-center gap-2.5 p-2 rounded-lg text-xs transition-all text-left", currentDoc?.path === doc.path ? "bg-blue-600 text-white shadow-md shadow-blue-500/20" : "text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800")}
+                        >
+                          <FileText size={14} className={currentDoc?.path === doc.path ? "text-white shrink-0" : "text-blue-500 shrink-0"} />
+                          <span className="truncate flex-1">{doc.name}</span>
+                        </button>
+                      ))}
+                      {sortedAudio.map(track => (
+                        <button 
+                          key={track.path} onClick={() => setCurrentAudio(track)}
+                          className={cn("w-full flex items-center gap-2.5 p-2 rounded-lg text-xs transition-all text-left group", currentAudio?.path === track.path ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/20" : "text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800")}
+                        >
+                          <Volume2 size={14} className={currentAudio?.path === track.path ? "text-white shrink-0" : "text-indigo-500 shrink-0"} />
+                          <span className="truncate flex-1">{track.name}</span>
+                          {currentAudio?.path === track.path && <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse shrink-0" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </aside>
+      </main>
+    </div>
+  );
+}
+
+function DocViewer({ doc }) {
+  const [url, setUrl] = useState('');
+  const [loading, setLoading] = useState(true);
+  const isDocx = doc.name.toLowerCase().endsWith('.docx') || doc.name.toLowerCase().endsWith('.doc');
+
+  useEffect(() => {
+    setLoading(true);
+    if (!isDocx) setUrl(getLocalFileUrl(doc.path));
+    setTimeout(() => setLoading(false), 50);
+  }, [doc, isDocx]);
+
+  if (isDocx) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-8 text-center bg-white dark:bg-slate-900">
+        <div className="w-24 h-24 bg-blue-50 text-blue-600 rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-blue-500/10"><FileText size={48} /></div>
+        <h3 className="text-xl font-black mb-2">{doc.name}</h3>
+        <p className="text-slate-500 max-w-sm mb-8">Tài liệu Word cần được mở bằng Microsoft Word để đảm bảo định dạng hiển thị chuẩn nhất.</p>
+        <button onClick={() => window.api.openFileExternal(doc.path)} className="px-10 py-4 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-xl shadow-blue-500/20 transition-all active:scale-95 flex items-center gap-3">
+          MỞ BẰNG MS WORD <ArrowLeft size={18} className="rotate-180" />
+        </button>
+      </div>
+    );
+  }
+
+  if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-blue-500" size={32} /></div>;
+  return <iframe src={url} className="w-full h-full border-none" title="Reader" />;
+}
+
+function AudioBar({ currentAudio, playlist, onNext, onPrev }) {
+  const [src, setSrc] = useState('');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [isConverting, setIsConverting] = useState(false);
+  const [volume, setVolume] = useState(80);
+  const [skipHint, setSkipHint] = useState('');
+  const audioRef = useRef(null);
+  const lastClickRef = useRef(0);
+
+  useEffect(() => {
+    async function loadAudio() {
+      if (!currentAudio) return;
+      const isWma = currentAudio.name.toLowerCase().endsWith('.wma');
+      try {
+        if (isWma) {
+          setIsConverting(true);
+          if (window.api) setSrc(await window.api.getAudioData(currentAudio.path));
+          setIsConverting(false);
+        } else {
+          setSrc(getLocalFileUrl(currentAudio.path));
+        }
+        setIsPlaying(true);
+      } catch (e) { console.error("Audio error", e); setIsConverting(false); }
+    }
+    loadAudio();
+  }, [currentAudio]);
+
+  useEffect(() => {
+    if (audioRef.current) {
+      if (isPlaying) audioRef.current.play().catch(() => setIsPlaying(false));
+      else audioRef.current.pause();
+    }
+  }, [isPlaying, src]);
+
+  const handleTimeUpdate = () => {
+    if (audioRef.current) setProgress((audioRef.current.currentTime / audioRef.current.duration) * 100 || 0);
+  };
+
+  const handleSeek = (e) => {
+    const time = (e.target.value / 100) * audioRef.current.duration;
+    audioRef.current.currentTime = time;
+    setProgress(e.target.value);
+  };
+
+  const smartSkip = (sec) => {
+    const now = Date.now();
+    let skip = sec;
+    if (now - lastClickRef.current < 300) { skip = sec * 2; setSkipHint(sec > 0 ? `+${skip}s` : `${skip}s`); } 
+    else { setSkipHint(sec > 0 ? `+${sec}s` : `${sec}s`); }
+    lastClickRef.current = now;
+    if (audioRef.current) audioRef.current.currentTime = Math.max(0, Math.min(audioRef.current.duration, audioRef.current.currentTime + skip));
+    setTimeout(() => setSkipHint(''), 800);
+  };
+
+  const handleRewindHold = () => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      if (Date.now() - start > 600) { audioRef.current.currentTime = 0; setSkipHint('VỀ ĐẦU'); clearInterval(timer); }
+    }, 100);
+    const clear = () => { clearInterval(timer); window.removeEventListener('mouseup', clear); };
+    window.addEventListener('mouseup', clear);
+  };
+
+  if (!currentAudio) return null;
+
+  return (
+    <div className="h-24 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-6 py-2 z-30 shadow-[0_-10px_30px_rgba(0,0,0,0.03)] shrink-0">
+      <audio ref={audioRef} src={src} onTimeUpdate={handleTimeUpdate} onLoadedMetadata={(e) => setDuration(e.target.duration)} onEnded={onNext}/>
+      <div className="max-w-6xl mx-auto h-full flex flex-col justify-center gap-2">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-xs truncate max-w-[200px]">{currentAudio.name}</span>
+              {isConverting && <span className="text-[9px] font-black text-blue-600 animate-pulse">CONVERTING WMA...</span>}
+              {skipHint && <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-1.5 rounded">{skipHint}</span>}
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-[9px] font-mono text-slate-400 w-8">{formatTime(audioRef.current?.currentTime)}</span>
+              <div className="flex-1 relative group h-6 flex items-center">
+                <input type="range" min="0" max="100" value={progress} onChange={handleSeek} className="w-full h-1 bg-slate-100 dark:bg-slate-800 rounded-full appearance-none accent-blue-600 cursor-pointer group-hover:h-1.5 transition-all" />
+              </div>
+              <span className="text-[9px] font-mono text-slate-400 w-8">{formatTime(duration)}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+             <div className="flex items-center gap-0.5 mr-2">
+                <VolumeX size={14} className="text-slate-300" />
+                <input type="range" min="0" max="100" value={volume} onChange={(e) => { setVolume(e.target.value); if(audioRef.current) audioRef.current.volume = e.target.value / 100; }} className="w-16 h-1 accent-slate-400" />
+                <Volume2 size={14} className="text-slate-400" />
+             </div>
+          </div>
+        </div>
+        <div className="flex items-center justify-center gap-4">
+          <button onClick={onPrev} className="text-slate-400 hover:text-slate-900"><SkipBack size={20}/></button>
+          <button onMouseDown={handleRewindHold} onClick={() => smartSkip(-5)} className="text-slate-400 hover:text-indigo-600 transition-colors"><RotateCcw size={20}/></button>
+          <button onClick={() => setIsPlaying(!isPlaying)} disabled={isConverting} className="w-10 h-10 bg-slate-900 dark:bg-blue-600 text-white rounded-full flex items-center justify-center hover:scale-110 active:scale-95 transition-all shadow-xl shadow-blue-500/20 disabled:opacity-50">
+            {isPlaying ? <Pause size={20} fill="currentColor"/> : <Play size={20} fill="currentColor" className="ml-0.5"/>}
+          </button>
+          <button onClick={() => smartSkip(5)} className="text-slate-400 hover:text-indigo-600 transition-colors"><RotateCw size={20}/></button>
+          <button onClick={onNext} className="text-slate-400 hover:text-slate-900"><SkipForward size={20}/></button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const formatTime = (time) => {
+  if (!time || isNaN(time)) return "0:00";
+  const m = Math.floor(time / 60);
+  const s = Math.floor(time % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+};
+
+function EmptyState({ onSettings }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 bg-white dark:bg-slate-900 rounded-[40px] border border-dashed border-slate-200">
+      <div className="w-24 h-24 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mb-6"><FolderPlus size={40} /></div>
+      <h2 className="text-2xl font-black mb-2 text-slate-800">Thư viện trống</h2>
+      <p className="text-slate-500 mb-8 max-w-sm text-center font-medium">Bạn chưa chỉ định thư mục chứa tài liệu học tập. Hãy thêm folder để bắt đầu quét dữ liệu.</p>
+      <button onClick={onSettings} className="px-8 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-500/20 hover:bg-blue-700 transition-all flex items-center gap-2">
+        <FolderPlus size={20} /> THÊM THƯ MỤC NGAY
+      </button>
     </div>
   );
 }
 
 function SettingsModal({ settings, onSave, onClose }) {
   const [folders, setFolders] = useState(settings.scanFolders || []);
-
-  const handleAddFolder = async () => {
-    if (window.api) {
-      const folder = await window.api.selectFolder();
-      if (folder && !folders.includes(folder)) {
-        setFolders([...folders, folder]);
-      }
-    }
-  };
-
-  const handleRemoveFolder = (index) => {
-    setFolders(folders.filter((_, i) => i !== index));
-  };
-
-  const handleSave = () => {
-    onSave({ ...settings, scanFolders: folders });
-  };
-
+  
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
-      <div className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 animate-in zoom-in-95 duration-200">
-        <div className="flex items-center justify-between p-6 border-b border-border">
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <Settings size={24} className="text-primary" />
-            Settings
-          </h2>
-          <button onClick={onClose} className="p-2 hover:bg-secondary rounded-full transition-colors">
-            <X size={20} />
-          </button>
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center z-[100] p-4">
+      <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[32px] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+        <div className="p-8 pb-0 flex items-center justify-between">
+          <h2 className="text-2xl font-black tracking-tight flex items-center gap-3"><Settings className="text-blue-600"/> Cấu hình</h2>
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full"><X/></button>
         </div>
-
-        <div className="p-6 space-y-6">
-          <div>
-            <h3 className="font-semibold mb-3 text-sm uppercase tracking-wider text-muted-foreground">Scan Folders</h3>
-            <p className="text-xs text-muted-foreground mb-4">Add folders containing your learning materials</p>
-
-            <div className="space-y-2 max-h-60 overflow-y-auto">
-              {folders.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <FolderPlus size={32} className="mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">No folders added yet</p>
-                </div>
-              ) : (
-                folders.map((folder, index) => (
-                  <div key={index} className="flex items-center gap-3 p-3 bg-secondary/50 rounded-lg group">
-                    <div className="w-8 h-8 bg-primary/10 rounded flex items-center justify-center text-primary shrink-0">
-                      <Folder size={16} />
-                    </div>
-                    <span className="flex-1 text-sm truncate font-mono">{folder}</span>
-                    <button
-                      onClick={() => handleRemoveFolder(index)}
-                      className="p-1.5 text-destructive hover:bg-destructive/10 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <Trash2 size={16} />
-                    </button>
+        <div className="p-8 space-y-6">
+           <div>
+              <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-widest">Thư mục đã kết nối</label>
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-2 scrollbar-thin">
+                {folders.map((f, i) => (
+                  <div key={i} className="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 rounded-2xl group">
+                    <Folder className="text-blue-500 shrink-0" size={18} />
+                    <span className="text-xs font-bold truncate flex-1">{f}</span>
+                    <button onClick={() => setFolders(folders.filter((_, idx) => idx !== i))} className="text-rose-500 opacity-0 group-hover:opacity-100 p-1 hover:bg-rose-50 rounded-lg"><Trash2 size={16} /></button>
                   </div>
-                ))
-              )}
-            </div>
-
-            <button
-              onClick={handleAddFolder}
-              className="mt-4 w-full py-3 border-2 border-dashed border-border rounded-xl text-muted-foreground hover:border-primary hover:text-primary transition-colors flex items-center justify-center gap-2"
-            >
-              <FolderPlus size={18} />
-              Add Folder
-            </button>
-          </div>
-        </div>
-
-        <div className="flex gap-3 p-6 border-t border-border">
-          <button onClick={onClose} className="flex-1 py-2.5 bg-secondary text-secondary-foreground rounded-lg hover:bg-secondary/80 transition-colors font-medium">
-            Cancel
-          </button>
-          <button onClick={handleSave} className="flex-1 py-2.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors font-medium shadow-lg shadow-primary/20">
-            Save & Reload
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Dashboard({ trees, onSetClick, onSettingsClick, onRefresh }) {
-  const [search, setSearch] = useState('');
-  const [expandedFolders, setExpandedFolders] = useState({});
-
-  // Initialize all root folders as expanded
-  useEffect(() => {
-    const initial = {};
-    trees.forEach(tree => {
-      initial[tree.id] = true;
-    });
-    setExpandedFolders(initial);
-  }, [trees]);
-
-  const toggleFolder = (id) => {
-    setExpandedFolders(prev => ({
-      ...prev,
-      [id]: !prev[id]
-    }));
-  };
-
-  const formatSize = (bytes) => {
-    if (!bytes) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  };
-
-  const filterTree = (node, searchTerm) => {
-    if (!searchTerm) return true;
-    const term = searchTerm.toLowerCase();
-    if (node.name.toLowerCase().includes(term)) return true;
-    if (node.children) {
-      return node.children.some(child => filterTree(child, searchTerm));
-    }
-    return false;
-  };
-
-  const isEmpty = trees.length === 0 || trees.every(t => t.docs === 0 && t.audio === 0);
-
-  return (
-    <div className="p-6 max-w-[1920px] mx-auto">
-      <div className="flex justify-between items-center mb-6 sticky top-0 bg-background/80 backdrop-blur-sm z-10 py-4 border-b border-border/50">
-        <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-blue-600 bg-clip-text text-transparent">My Library</h1>
-        <div className="flex items-center gap-3">
-          <div className="relative group">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
-            <input
-              type="text"
-              placeholder="Search..."
-              className="pl-10 pr-4 py-2 border rounded-full bg-secondary text-secondary-foreground focus:outline-none focus:ring-2 focus:ring-primary w-48 md:w-64"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-          <button onClick={onRefresh} className="p-2.5 hover:bg-secondary rounded-full transition-colors" title="Refresh">
-            <RefreshCw size={20} />
-          </button>
-          <button onClick={onSettingsClick} className="p-2.5 hover:bg-secondary rounded-full transition-colors" title="Settings">
-            <Settings size={20} />
-          </button>
-        </div>
-      </div>
-
-      {isEmpty ? (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <div className="w-24 h-24 bg-muted rounded-full flex items-center justify-center mb-6">
-            <BookOpen size={40} className="text-muted-foreground" />
-          </div>
-          <h2 className="text-xl font-semibold mb-2">No learning materials found</h2>
-          <p className="text-muted-foreground mb-6">Add folders to get started.</p>
-          <button onClick={onSettingsClick} className="px-6 py-3 bg-primary text-primary-foreground rounded-lg font-medium flex items-center gap-2">
-            <FolderPlus size={18} /> Add Folders
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {trees.map(tree => (
-            <TreeNode
-              key={tree.id}
-              node={tree}
-              level={0}
-              onSetClick={onSetClick}
-              expandedFolders={expandedFolders}
-              toggleFolder={toggleFolder}
-              formatSize={formatSize}
-              searchTerm={search}
-              filterTree={filterTree}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TreeNode({ node, level, onSetClick, expandedFolders, toggleFolder, formatSize, searchTerm, filterTree }) {
-  const isExpanded = expandedFolders[node.id];
-  const hasChildren = node.children && node.children.length > 0;
-  const hasContent = node.docs > 0 || node.audio > 0;
-
-  if (!filterTree(node, searchTerm)) return null;
-
-  const handleClick = () => {
-    if (hasContent) {
-      onSetClick(node);
-    } else if (hasChildren) {
-      toggleFolder(node.id);
-    }
-  };
-
-  const handleToggle = (e) => {
-    e.stopPropagation();
-    toggleFolder(node.id);
-  };
-
-  return (
-    <div>
-      <div
-        className={cn(
-          "flex items-center gap-3 p-3 rounded-lg transition-all cursor-pointer group",
-          hasContent ? "hover:bg-primary/10 hover:shadow-md" : "hover:bg-secondary/50",
-          level === 0 && "bg-card border border-border"
-        )}
-        style={{ marginLeft: level * 16 }}
-        onClick={handleClick}
-      >
-        {/* Expand/Collapse Toggle */}
-        {hasChildren ? (
-          <button onClick={handleToggle} className="p-1 hover:bg-secondary rounded shrink-0">
-            {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          </button>
-        ) : (
-          <div className="w-6" />
-        )}
-
-        {/* Icon/Thumbnail */}
-        <div className="w-12 h-12 rounded-lg bg-muted overflow-hidden shrink-0 flex items-center justify-center">
-          {node.thumbnailData ? (
-            <img src={node.thumbnailData} alt="" className="w-full h-full object-cover" />
-          ) : hasContent ? (
-            <BookOpen size={20} className="text-primary/50" />
-          ) : (
-            isExpanded ? <FolderOpen size={20} className="text-amber-500" /> : <Folder size={20} className="text-amber-500" />
-          )}
-        </div>
-
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          <h3 className={cn("font-semibold truncate", hasContent && "group-hover:text-primary")}>{node.name}</h3>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            {node.docs > 0 && <span className="flex items-center gap-1"><FileText size={12} /> {node.docs}</span>}
-            {node.audio > 0 && <span className="flex items-center gap-1"><Volume2 size={12} /> {node.audio}</span>}
-            {node.size > 0 && <span>{formatSize(node.size)}</span>}
-          </div>
-        </div>
-
-        {/* Audio badge */}
-        {node.audio > 0 && (
-          <span className="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-medium rounded-full">AUDIO</span>
-        )}
-      </div>
-
-      {/* Children */}
-      {isExpanded && hasChildren && (
-        <div className="mt-1">
-          {node.children.map(child => (
-            <TreeNode
-              key={child.id}
-              node={child}
-              level={level + 1}
-              onSetClick={onSetClick}
-              expandedFolders={expandedFolders}
-              toggleFolder={toggleFolder}
-              formatSize={formatSize}
-              searchTerm={searchTerm}
-              filterTree={filterTree}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LearningView({ set, onBack }) {
-  const [currentDoc, setCurrentDoc] = useState(null);
-  const [currentAudio, setCurrentAudio] = useState(null);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [expandedGroups, setExpandedGroups] = useState({});
-
-  useEffect(() => {
-    // Initialize expanded groups
-    const initial = {};
-    if (set.structure) {
-      set.structure.forEach((group, idx) => {
-        initial[idx] = true;
-      });
-    }
-    setExpandedGroups(initial);
-
-    // Select first doc
-    if (set.docs && set.docs.length > 0) {
-      const pdf = set.docs.find(d => d.name.toLowerCase().endsWith('.pdf'));
-      setCurrentDoc(pdf || set.docs[0]);
-    }
-    if (set.audio && set.audio.length > 0) {
-      setCurrentAudio(set.audio[0]);
-    }
-  }, [set]);
-
-  const toggleGroup = (idx) => {
-    setExpandedGroups(prev => ({ ...prev, [idx]: !prev[idx] }));
-  };
-
-  const handleNextAudio = () => {
-    if (!set.audio || !currentAudio) return;
-    const currentIndex = set.audio.findIndex(a => a.path === currentAudio.path);
-    if (currentIndex < set.audio.length - 1) {
-      setCurrentAudio(set.audio[currentIndex + 1]);
-    }
-  };
-
-  const handlePrevAudio = () => {
-    if (!set.audio || !currentAudio) return;
-    const currentIndex = set.audio.findIndex(a => a.path === currentAudio.path);
-    if (currentIndex > 0) {
-      setCurrentAudio(set.audio[currentIndex - 1]);
-    }
-  };
-
-  return (
-    <div className="h-screen flex flex-col overflow-hidden bg-background">
-      {/* Header */}
-      <div className="h-14 border-b border-border flex items-center px-4 justify-between bg-card z-20 shadow-sm shrink-0">
-        <div className="flex items-center gap-4 min-w-0">
-          <button onClick={onBack} className="p-2 hover:bg-secondary rounded-full transition-colors">
-            <ArrowLeft size={20} />
-          </button>
-          <div className="flex flex-col min-w-0">
-            <h2 className="font-semibold text-sm md:text-base truncate">{set.name}</h2>
-            {currentDoc && <span className="text-xs text-muted-foreground truncate hidden md:block">{currentDoc.name}</span>}
-          </div>
-        </div>
-        <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-secondary rounded transition-colors">
-          <Menu size={20} />
-        </button>
-      </div>
-
-      {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden relative">
-        {/* Viewer */}
-        <div className={cn("bg-muted/30 relative flex flex-col transition-all duration-300", isSidebarOpen ? 'w-full lg:w-3/4' : 'w-full')}>
-          {currentDoc ? (
-            <div className="flex-1 w-full h-full relative overflow-hidden">
-              <DocViewer doc={currentDoc} />
-            </div>
-          ) : (
-            <div className="flex items-center justify-center h-full text-muted-foreground flex-col gap-4">
-              <BookOpen size={64} strokeWidth={1} />
-              <p>Select a document to start reading</p>
-            </div>
-          )}
-          <AudioBar
-            currentAudio={currentAudio}
-            playlist={set.audio}
-            onSelect={setCurrentAudio}
-            onNext={handleNextAudio}
-            onPrev={handlePrevAudio}
-          />
-        </div>
-
-        {/* Sidebar - Grouped */}
-        <div className={cn("w-full lg:w-1/4 max-w-sm border-l border-border bg-card flex flex-col shrink-0 transition-all duration-300 absolute right-0 top-0 bottom-0 z-10 lg:static transform", isSidebarOpen ? 'translate-x-0 shadow-xl lg:shadow-none' : 'translate-x-full lg:hidden')}>
-          <div className="p-4 border-b border-border font-medium flex justify-between items-center">
-            <span className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Contents</span>
-            <span className="text-[10px] font-mono bg-primary/10 text-primary px-2 py-0.5 rounded-full">
-              {set.docs?.length || 0} docs · {set.audio?.length || 0} audio
-            </span>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-2">
-            {set.structure && set.structure.map((group, idx) => (
-              <div key={idx} className="mb-2">
-                {/* Group Header */}
-                <button
-                  onClick={() => toggleGroup(idx)}
-                  className="w-full flex items-center gap-2 p-2 text-left hover:bg-secondary/50 rounded-lg transition-colors"
-                >
-                  {expandedGroups[idx] ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <FolderOpen size={14} className="text-amber-500" />
-                  <span className="text-xs font-medium truncate flex-1">{group.folder || 'Root'}</span>
-                  <span className="text-[10px] text-muted-foreground">{group.docs.length + group.audio.length}</span>
-                </button>
-
-                {/* Group Content */}
-                {expandedGroups[idx] && (
-                  <div className="ml-4 space-y-0.5">
-                    {/* Docs */}
-                    {group.docs.map(doc => (
-                      <div
-                        key={doc.path}
-                        onClick={() => setCurrentDoc(doc)}
-                        className={cn(
-                          "flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all text-sm",
-                          currentDoc?.path === doc.path ? "bg-primary text-primary-foreground" : "hover:bg-secondary"
-                        )}
-                      >
-                        <FileText size={14} />
-                        <span className="truncate text-xs">{doc.name}</span>
-                      </div>
-                    ))}
-                    {/* Audio */}
-                    {group.audio.map((track, i) => (
-                      <div
-                        key={track.path}
-                        onClick={() => setCurrentAudio(track)}
-                        className={cn(
-                          "flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all text-sm",
-                          currentAudio?.path === track.path ? "bg-accent text-accent-foreground" : "hover:bg-secondary"
-                        )}
-                      >
-                        <div className="w-5 h-5 flex items-center justify-center rounded bg-secondary text-[10px] font-mono shrink-0">
-                          {i + 1}
-                        </div>
-                        <span className="truncate text-xs flex-1">{track.name}</span>
-                        {currentAudio?.path === track.path && <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                ))}
               </div>
-            ))}
-          </div>
+              <button 
+                onClick={async () => { const f = await window.api.selectFolder(); if(f && !folders.includes(f)) setFolders([...folders, f]); }}
+                className="w-full mt-4 py-4 border-2 border-dashed border-slate-200 hover:border-blue-400 hover:text-blue-600 text-slate-400 rounded-2xl font-black text-xs transition-all flex items-center justify-center gap-2"
+              ><FolderPlus size={18}/> THÊM THƯ MỤC MỚI</button>
+           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function DocViewer({ doc }) {
-  const [pdfUrl, setPdfUrl] = useState('');
-  const isDocx = doc.name.toLowerCase().endsWith('.docx');
-
-  useEffect(() => {
-    async function loadPdfUrl() {
-      if (window.api && !isDocx) {
-        try {
-          const url = await window.api.getFileUrl(doc.path);
-          setPdfUrl(url);
-        } catch (e) {
-          console.error('Error getting file URL:', e);
-        }
-      }
-    }
-    loadPdfUrl();
-  }, [doc, isDocx]);
-
-  if (isDocx) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full space-y-6 p-8 bg-gradient-to-br from-blue-50/50 to-indigo-50/50 dark:from-background dark:to-muted/10">
-        <div className="w-32 h-32 bg-white dark:bg-card rounded-2xl shadow-xl flex items-center justify-center text-blue-600 border">
-          <FileText size={64} strokeWidth={1} />
-        </div>
-        <div className="text-center space-y-2 max-w-lg">
-          <h3 className="text-2xl font-bold">{doc.name}</h3>
-          <p className="text-muted-foreground">Open in Microsoft Word for best experience.</p>
-        </div>
-        <button
-          onClick={() => window.api.openFileExternal(doc.path)}
-          className="px-8 py-3 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-all shadow-lg flex items-center gap-2 font-medium"
-        >
-          Open in Word <ArrowLeft size={16} className="rotate-180" />
-        </button>
-      </div>
-    );
-  }
-
-  if (!pdfUrl) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
-      </div>
-    );
-  }
-
-  return <iframe src={pdfUrl} className="w-full h-full border-none bg-white" title="PDF Viewer" />;
-}
-
-function AudioBar({ currentAudio, playlist, onSelect, onNext, onPrev }) {
-  const [audioSrc, setAudioSrc] = useState('');
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [playbackRate, setPlaybackRate] = useState(1);
-  const [volume, setVolume] = useState(100);
-  const [skipHint, setSkipHint] = useState('');
-  const audioRef = useRef(null);
-  const rewindTimerRef = useRef(null);
-  const forwardTimerRef = useRef(null);
-  const lastClickRef = useRef({ time: 0, type: '' });
-
-  useEffect(() => {
-    async function loadAudio() {
-      if (window.api && currentAudio) {
-        try {
-          const dataUrl = await window.api.getAudioData(currentAudio.path);
-          if (dataUrl) {
-            setAudioSrc(dataUrl);
-            setIsPlaying(true);
-          }
-        } catch (e) {
-          console.error('Error loading audio:', e);
-        }
-      }
-    }
-    loadAudio();
-  }, [currentAudio]);
-
-  useEffect(() => {
-    if (audioRef.current && audioSrc) {
-      if (isPlaying) {
-        audioRef.current.play().catch(e => console.error('Play error:', e));
-      } else {
-        audioRef.current.pause();
-      }
-    }
-  }, [isPlaying, audioSrc]);
-
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.playbackRate = playbackRate;
-    }
-  }, [playbackRate]);
-
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = Math.min(volume / 100, 1);
-    }
-  }, [volume]);
-
-  // Clear hint after 1.5s
-  useEffect(() => {
-    if (skipHint) {
-      const timer = setTimeout(() => setSkipHint(''), 1500);
-      return () => clearTimeout(timer);
-    }
-  }, [skipHint]);
-
-  const handleTimeUpdate = () => {
-    if (audioRef.current) setCurrentTime(audioRef.current.currentTime);
-  };
-
-  const handleLoadedMetadata = () => {
-    if (audioRef.current) setDuration(audioRef.current.duration);
-  };
-
-  const handleSeek = (e) => {
-    const seekTime = (e.target.value / 100) * duration;
-    if (audioRef.current) {
-      audioRef.current.currentTime = seekTime;
-      setCurrentTime(seekTime);
-    }
-  };
-
-  const handleEnded = () => {
-    setIsPlaying(false);
-    if (onNext) onNext();
-  };
-
-  const skipTime = (seconds) => {
-    if (audioRef.current) {
-      const newTime = Math.max(0, Math.min(duration, audioRef.current.currentTime + seconds));
-      audioRef.current.currentTime = newTime;
-      setCurrentTime(newTime);
-    }
-  };
-
-  const goToBeginning = () => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-      setCurrentTime(0);
-      setSkipHint('⏮ Về đầu');
-    }
-  };
-
-  // Smart click handler for rewind button
-  const handleRewindClick = () => {
-    const now = Date.now();
-    const timeDiff = now - lastClickRef.current.time;
-
-    if (lastClickRef.current.type === 'rewind' && timeDiff < 300) {
-      // Double click - skip 10s
-      skipTime(-10);
-      setSkipHint('⏪ -10s');
-      lastClickRef.current = { time: 0, type: '' };
-    } else {
-      // Single click - wait to see if double click
-      lastClickRef.current = { time: now, type: 'rewind' };
-      setTimeout(() => {
-        if (lastClickRef.current.type === 'rewind' && Date.now() - lastClickRef.current.time >= 280) {
-          skipTime(-5);
-          setSkipHint('⏪ -5s');
-          lastClickRef.current = { time: 0, type: '' };
-        }
-      }, 300);
-    }
-  };
-
-  // Smart click handler for forward button
-  const handleForwardClick = () => {
-    const now = Date.now();
-    const timeDiff = now - lastClickRef.current.time;
-
-    if (lastClickRef.current.type === 'forward' && timeDiff < 300) {
-      // Double click - skip 10s
-      skipTime(10);
-      setSkipHint('⏩ +10s');
-      lastClickRef.current = { time: 0, type: '' };
-    } else {
-      // Single click - wait to see if double click
-      lastClickRef.current = { time: now, type: 'forward' };
-      setTimeout(() => {
-        if (lastClickRef.current.type === 'forward' && Date.now() - lastClickRef.current.time >= 280) {
-          skipTime(5);
-          setSkipHint('⏩ +5s');
-          lastClickRef.current = { time: 0, type: '' };
-        }
-      }, 300);
-    }
-  };
-
-  // Long press handlers for rewind (go to beginning)
-  const handleRewindMouseDown = () => {
-    rewindTimerRef.current = setTimeout(() => {
-      goToBeginning();
-      lastClickRef.current = { time: 0, type: '' }; // Cancel click
-    }, 500);
-  };
-
-  const handleRewindMouseUp = () => {
-    if (rewindTimerRef.current) {
-      clearTimeout(rewindTimerRef.current);
-    }
-  };
-
-  const handleVolumeChange = (e) => {
-    setVolume(parseInt(e.target.value));
-  };
-
-  const getVolumeIcon = () => {
-    if (volume === 0) return <VolumeX size={14} />;
-    if (volume < 50) return <Volume size={14} />;
-    if (volume < 100) return <Volume1 size={14} />;
-    return <Volume2 size={14} />;
-  };
-
-  const getVolumeColor = () => {
-    if (volume <= 100) {
-      const hue = 120 - (volume * 0.6);
-      return `hsl(${hue}, 70%, 45%)`;
-    } else {
-      const hue = 60 - ((volume - 100) * 0.6);
-      return `hsl(${Math.max(0, hue)}, 80%, 45%)`;
-    }
-  };
-
-  const formatTime = (time) => {
-    if (!time || isNaN(time)) return '0:00';
-    const mins = Math.floor(time / 60);
-    const secs = Math.floor(time % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  if (!currentAudio) return null;
-
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
-
-  return (
-    <div className="bg-card/95 backdrop-blur-md border-t border-border px-4 py-2 shrink-0 shadow-[0_-4px_20px_rgba(0,0,0,0.08)] z-30">
-      <audio
-        ref={audioRef}
-        src={audioSrc}
-        onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={handleLoadedMetadata}
-        onEnded={handleEnded}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
-      />
-
-      <div className="w-full max-w-5xl mx-auto flex flex-col gap-2">
-        {/* Row 1: Track Info + Progress + Volume */}
-        <div className="flex items-center gap-3">
-          {/* Track Info */}
-          <div className="flex items-center gap-2 min-w-0 w-44 shrink-0">
-            <div className="w-7 h-7 bg-primary/10 rounded flex items-center justify-center text-primary shrink-0">
-              {isPlaying ? <Volume2 size={14} className="animate-pulse" /> : <Volume2 size={14} />}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="font-medium truncate text-xs">{currentAudio.name}</div>
-              <div className="text-[10px] text-primary">Now Playing</div>
-            </div>
-          </div>
-
-          {/* Progress */}
-          <div className="flex-1 flex items-center gap-2">
-            <span className="text-[10px] text-muted-foreground font-mono w-9 text-right">{formatTime(currentTime)}</span>
-            <div className="flex-1 relative group">
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={progress}
-                onChange={handleSeek}
-                className="w-full h-1 bg-secondary rounded-full appearance-none cursor-pointer accent-primary group-hover:h-1.5 transition-all"
-              />
-              {/* Skip Hint Overlay */}
-              {skipHint && (
-                <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-foreground text-background text-[10px] px-2 py-0.5 rounded font-medium animate-in fade-in zoom-in-95 duration-150">
-                  {skipHint}
-                </div>
-              )}
-            </div>
-            <span className="text-[10px] text-muted-foreground font-mono w-9">{formatTime(duration)}</span>
-          </div>
-
-          {/* Volume */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              onClick={() => setVolume(volume === 0 ? 100 : 0)}
-              className="p-1 rounded hover:bg-secondary transition-colors"
-              title={volume === 0 ? "Bật tiếng" : "Tắt tiếng"}
-            >
-              {getVolumeIcon()}
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="200"
-              value={volume}
-              onChange={handleVolumeChange}
-              className="w-16 h-1 rounded-full appearance-none cursor-pointer"
-              style={{
-                background: `linear-gradient(to right, ${getVolumeColor()} 0%, ${getVolumeColor()} ${volume / 2}%, hsl(var(--secondary)) ${volume / 2}%, hsl(var(--secondary)) 100%)`
-              }}
-            />
-            <span
-              className="text-[10px] font-mono font-bold w-9 text-center"
-              style={{ color: getVolumeColor() }}
-            >
-              {volume}%
-            </span>
-          </div>
-        </div>
-
-        {/* Row 2: Controls */}
-        <div className="flex items-center justify-center gap-1">
-          {/* Prev Audio */}
-          <button
-            onClick={onPrev}
-            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
-            title="Audio trước"
-          >
-            <SkipBack size={16} />
-          </button>
-
-          {/* Rewind: Click=5s, Double=10s, Hold=Beginning */}
-          <button
-            onClick={handleRewindClick}
-            onMouseDown={handleRewindMouseDown}
-            onMouseUp={handleRewindMouseUp}
-            onMouseLeave={handleRewindMouseUp}
-            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors flex items-center"
-            title="Click: -5s | Double: -10s | Giữ: Về đầu"
-          >
-            <RotateCcw size={16} />
-          </button>
-
-          {/* Play/Pause */}
-          <button
-            onClick={() => setIsPlaying(!isPlaying)}
-            className="w-10 h-10 mx-2 rounded-full bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 shadow-lg shadow-primary/25 transition-all hover:scale-105"
-          >
-            {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
-          </button>
-
-          {/* Forward: Click=5s, Double=10s */}
-          <button
-            onClick={handleForwardClick}
-            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors flex items-center"
-            title="Click: +5s | Double: +10s"
-          >
-            <RotateCw size={16} />
-          </button>
-
-          {/* Next Audio */}
-          <button
-            onClick={onNext}
-            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
-            title="Audio sau"
-          >
-            <SkipForward size={16} />
-          </button>
-
-          {/* Speed */}
-          <select
-            value={playbackRate}
-            onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
-            className="ml-3 bg-secondary text-[10px] rounded px-1.5 py-1 cursor-pointer font-medium hover:bg-secondary/80 transition-colors"
-          >
-            <option value={0.5}>0.5x</option>
-            <option value={0.75}>0.75x</option>
-            <option value={1}>1.0x</option>
-            <option value={1.25}>1.25x</option>
-            <option value={1.5}>1.5x</option>
-            <option value={2}>2.0x</option>
-          </select>
+        <div className="p-8 pt-0 flex gap-4 mt-auto">
+          <button onClick={onClose} className="flex-1 py-4 font-black text-slate-400 hover:text-slate-900">HUỶ BỎ</button>
+          <button onClick={() => onSave({ ...settings, scanFolders: folders })} className="flex-1 py-4 bg-slate-900 dark:bg-blue-600 text-white font-black rounded-2xl shadow-xl transition-all active:scale-95">LƯU & ĐỒNG BỘ</button>
         </div>
       </div>
     </div>

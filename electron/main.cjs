@@ -1,205 +1,134 @@
-const { app, BrowserWindow, ipcMain, shell, protocol, net, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const url = require('url');
+const crypto = require('crypto');
 const scanner = require('./scanner.cjs');
 
-// Simple settings storage
-const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+// Cấu hình thư mục Cache
+const USER_DATA = app.getPath('userData');
+const AUDIO_CACHE = path.join(USER_DATA, 'AudioCache');
+const SETTINGS_PATH = path.join(USER_DATA, 'settings.json');
+
+// Tạo thư mục nếu chưa tồn tại
+if (!fs.existsSync(AUDIO_CACHE)) {
+    fs.mkdirSync(AUDIO_CACHE, { recursive: true });
+}
 
 function loadSettings() {
     try {
-        if (fs.existsSync(settingsPath)) {
-            return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        }
-    } catch (e) {
-        console.error('Error loading settings:', e);
-    }
+        if (fs.existsSync(SETTINGS_PATH)) return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    } catch (e) {}
     return { scanFolders: [] };
-}
-
-function saveSettings(settings) {
-    try {
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    } catch (e) {
-        console.error('Error saving settings:', e);
-    }
 }
 
 let mainWindow;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 1200,
-        height: 800,
+        width: 1280,
+        height: 850,
+        title: "Learning Library Pro",
         icon: path.join(__dirname, '../public/logo/config_language_22470.ico'),
         webPreferences: {
             preload: path.join(__dirname, 'preload.cjs'),
             nodeIntegration: false,
             contextIsolation: true,
-            webSecurity: false
+            webSecurity: false // Bắt buộc false để cho phép React (localhost) truy cập trực tiếp file:/// của hệ thống
         },
         autoHideMenuBar: true,
     });
 
-    const isDev = !app.isPackaged;
-    if (isDev) {
-        mainWindow.loadURL('http://localhost:5173');
-        // mainWindow.webContents.openDevTools();
-    } else {
-        mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-    }
-
-    mainWindow.on('closed', function () {
-        mainWindow = null;
-    });
+    if (!app.isPackaged) mainWindow.loadURL('http://localhost:5173');
+    else mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
 }
 
-protocol.registerSchemesAsPrivileged([
-    { scheme: 'local-file', privileges: { bypassCSP: true, stream: true, supportFetchAPI: true, standard: true, secure: true } }
-]);
-
 app.whenReady().then(() => {
-    protocol.handle('local-file', (request) => {
-        const filePath = decodeURIComponent(request.url.replace('local-file://', ''));
-        return net.fetch('file://' + filePath);
-    });
-
     createWindow();
-
-    app.on('activate', function () {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    });
 });
 
-app.on('window-all-closed', function () {
+app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
-// IPC Handlers
+// ==========================================
+// IPC HANDLERS
+// ==========================================
 
-// Scan folders and return flat list
-ipcMain.handle('scan-folders', async (event, rootPaths) => {
-    let allSets = [];
-    const pathsToScan = rootPaths || loadSettings().scanFolders;
-    for (const root of pathsToScan) {
-        if (fs.existsSync(root)) {
-            console.log(`Scanning ${root}...`);
-            const results = scanner.scanDir(root);
-            allSets = allSets.concat(results);
-        }
-    }
-    return allSets;
+ipcMain.handle('scan-folders-tree', async (event, rootPaths) => {
+    const paths = rootPaths || loadSettings().scanFolders;
+    return paths.filter(p => fs.existsSync(p)).map(p => scanner.scanDirTree(p));
 });
 
-// Scan folders and return tree structure
-ipcMain.handle('scan-folders-tree', async (event, rootPaths) => {
-    const pathsToScan = rootPaths || loadSettings().scanFolders;
-    const trees = [];
-
-    for (const root of pathsToScan) {
-        if (fs.existsSync(root)) {
-            console.log(`Scanning tree ${root}...`);
-            const tree = scanner.scanDirTree(root);
-            if (tree) {
-                trees.push(tree);
+ipcMain.handle('get-thumbnail', async (event, folderPath) => {
+    try {
+        const files = fs.readdirSync(folderPath);
+        // Ưu tiên tìm file ảnh có sẵn (cover.jpg, thumb.png...)
+        const imgExts = ['.jpg', '.jpeg', '.png', '.webp'];
+        const coverKeywords = ['cover', 'thumb', 'poster', 'main'];
+        
+        for (const file of files) {
+            const lower = file.toLowerCase();
+            if (imgExts.some(ext => lower.endsWith(ext)) && coverKeywords.some(key => lower.includes(key))) {
+                const buffer = fs.readFileSync(path.join(folderPath, file));
+                const mime = lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
+                return `data:${mime};base64,${buffer.toString('base64')}`;
             }
         }
-    }
-    return trees;
+    } catch (e) {}
+    return null; // Trả về null để React tự tạo background gradient đẹp mắt
 });
 
-// Get files grouped by folder for a specific set
-ipcMain.handle('get-set-details-grouped', async (event, setPath) => {
-    return scanner.getFilesGrouped(setPath);
-});
-
-ipcMain.handle('get-set-details', async (event, setPath) => {
-    const docs = scanner.getDocFiles(setPath);
-    const audio = scanner.getAudioFiles(setPath);
-    return { docs, audio };
-});
-
-ipcMain.handle('open-file-external', async (event, filePath) => {
-    await shell.openPath(filePath);
-    return true;
-});
-
-ipcMain.handle('get-file-url', async (event, filePath) => {
-    const normalizedPath = filePath.replace(/\\/g, '/');
-    const encodedPath = normalizedPath.split('/').map(part => encodeURIComponent(part)).join('/');
-    return `file:///${encodedPath}`;
-});
+// HÀM QUAN TRỌNG: Format URL chuẩn xác, không bị lỗi mất ổ đĩa (C:, F:) trên Windows
+function formatSafeFileUrl(absolutePath) {
+    // url.pathToFileURL sẽ biến "F:\English\file.pdf" thành "file:///F:/English/file.pdf"
+    // Định dạng này được trình duyệt Chromium hỗ trợ đọc nguyên bản, không bao giờ bị lỗi parsing.
+    return url.pathToFileURL(absolutePath).href;
+}
 
 ipcMain.handle('get-audio-data', async (event, filePath) => {
     try {
-        const buffer = fs.readFileSync(filePath);
         const ext = path.extname(filePath).toLowerCase();
-        let mimeType = 'audio/mpeg';
-        if (ext === '.wav') mimeType = 'audio/wav';
-        if (ext === '.m4a') mimeType = 'audio/mp4';
-        if (ext === '.wma') mimeType = 'audio/x-ms-wma';
-        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+        
+        // Xử lý riêng cho .wma bằng FFmpeg (Convert sang MP3 và lưu Cache)
+        if (ext === '.wma') {
+            const hash = crypto.createHash('md5').update(filePath).digest('hex');
+            const cachePath = path.join(AUDIO_CACHE, `${hash}.mp3`);
+
+            if (!fs.existsSync(cachePath)) {
+                const ffmpeg = require('fluent-ffmpeg');
+                const ffmpegPath = require('ffmpeg-static');
+                ffmpeg.setFfmpegPath(ffmpegPath);
+
+                await new Promise((resolve, reject) => {
+                    ffmpeg(filePath)
+                        .toFormat('mp3')
+                        .on('end', resolve)
+                        .on('error', reject)
+                        .save(cachePath);
+                });
+            }
+            return formatSafeFileUrl(cachePath);
+        }
+
+        // Các định dạng .mp3, .wav... được Chromium hỗ trợ mặc định
+        return formatSafeFileUrl(filePath);
     } catch (error) {
-        console.error('Error reading audio file:', error);
+        console.error("Audio error:", error);
         return null;
     }
 });
 
-ipcMain.handle('get-settings', async () => {
-    return loadSettings();
+// Cung cấp URL đọc PDF
+ipcMain.handle('get-file-url', (event, filePath) => {
+    return formatSafeFileUrl(filePath);
 });
 
-ipcMain.handle('save-settings', async (event, settings) => {
-    saveSettings(settings);
-    return true;
-});
-
+ipcMain.handle('get-settings', () => loadSettings());
+ipcMain.handle('save-settings', (e, s) => fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s)));
+ipcMain.handle('open-file-external', (e, p) => shell.openPath(p));
 ipcMain.handle('select-folder', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, {
-        properties: ['openDirectory'],
-        title: 'Select folder to scan'
-    });
-    if (!result.canceled && result.filePaths.length > 0) {
-        return result.filePaths[0];
-    }
-    return null;
+    const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+    return r.canceled ? null : r.filePaths[0];
 });
-
-ipcMain.handle('get-thumbnail', async (event, setPath) => {
-    try {
-        const files = fs.readdirSync(setPath);
-        const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
-
-        // Look for cover images first
-        const coverNames = ['cover', 'thumbnail', 'thumb', 'poster', 'image'];
-        for (const name of coverNames) {
-            for (const ext of imageExts) {
-                for (const file of files) {
-                    if (file.toLowerCase() === name + ext || file.toLowerCase().startsWith(name)) {
-                        const filePath = path.join(setPath, file);
-                        const fileExt = path.extname(file).toLowerCase();
-                        if (imageExts.includes(fileExt)) {
-                            const buffer = fs.readFileSync(filePath);
-                            const mimeType = fileExt === '.png' ? 'image/png' : 'image/jpeg';
-                            return `data:${mimeType};base64,${buffer.toString('base64')}`;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fall back to first image
-        for (const file of files) {
-            const ext = path.extname(file).toLowerCase();
-            if (imageExts.includes(ext)) {
-                const imagePath = path.join(setPath, file);
-                const buffer = fs.readFileSync(imagePath);
-                const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
-                return `data:${mimeType};base64,${buffer.toString('base64')}`;
-            }
-        }
-    } catch (e) {
-        console.error('Error getting thumbnail:', e);
-    }
-    return null;
-});
+ipcMain.handle('get-set-details-grouped', (e, p) => scanner.getFilesGrouped(p));
