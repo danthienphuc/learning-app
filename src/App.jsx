@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, BookOpen, Volume2, FileText, ArrowLeft, SkipBack, SkipForward, Menu, Clock, Play, Pause, Settings, FolderPlus, Trash2, X, RefreshCw, ChevronRight, ChevronDown, Folder, FolderOpen } from 'lucide-react';
+import { Search, BookOpen, Volume2, FileText, ArrowLeft, SkipBack, SkipForward, Menu, Clock, Play, Pause, Settings, FolderPlus, Trash2, X, RefreshCw, ChevronRight, ChevronDown, Folder, FolderOpen, RotateCcw, RotateCw, Volume, Volume1, VolumeX, Rewind, FastForward } from 'lucide-react';
 import { cn } from './lib/utils';
 
 function App() {
@@ -602,7 +602,12 @@ function AudioBar({ currentAudio, playlist, onSelect, onNext, onPrev }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [volume, setVolume] = useState(100);
+  const [skipHint, setSkipHint] = useState('');
   const audioRef = useRef(null);
+  const rewindTimerRef = useRef(null);
+  const forwardTimerRef = useRef(null);
+  const lastClickRef = useRef({ time: 0, type: '' });
 
   useEffect(() => {
     async function loadAudio() {
@@ -637,6 +642,20 @@ function AudioBar({ currentAudio, playlist, onSelect, onNext, onPrev }) {
     }
   }, [playbackRate]);
 
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = Math.min(volume / 100, 1);
+    }
+  }, [volume]);
+
+  // Clear hint after 1.5s
+  useEffect(() => {
+    if (skipHint) {
+      const timer = setTimeout(() => setSkipHint(''), 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [skipHint]);
+
   const handleTimeUpdate = () => {
     if (audioRef.current) setCurrentTime(audioRef.current.currentTime);
   };
@@ -658,6 +677,103 @@ function AudioBar({ currentAudio, playlist, onSelect, onNext, onPrev }) {
     if (onNext) onNext();
   };
 
+  const skipTime = (seconds) => {
+    if (audioRef.current) {
+      const newTime = Math.max(0, Math.min(duration, audioRef.current.currentTime + seconds));
+      audioRef.current.currentTime = newTime;
+      setCurrentTime(newTime);
+    }
+  };
+
+  const goToBeginning = () => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = 0;
+      setCurrentTime(0);
+      setSkipHint('⏮ Về đầu');
+    }
+  };
+
+  // Smart click handler for rewind button
+  const handleRewindClick = () => {
+    const now = Date.now();
+    const timeDiff = now - lastClickRef.current.time;
+
+    if (lastClickRef.current.type === 'rewind' && timeDiff < 300) {
+      // Double click - skip 10s
+      skipTime(-10);
+      setSkipHint('⏪ -10s');
+      lastClickRef.current = { time: 0, type: '' };
+    } else {
+      // Single click - wait to see if double click
+      lastClickRef.current = { time: now, type: 'rewind' };
+      setTimeout(() => {
+        if (lastClickRef.current.type === 'rewind' && Date.now() - lastClickRef.current.time >= 280) {
+          skipTime(-5);
+          setSkipHint('⏪ -5s');
+          lastClickRef.current = { time: 0, type: '' };
+        }
+      }, 300);
+    }
+  };
+
+  // Smart click handler for forward button
+  const handleForwardClick = () => {
+    const now = Date.now();
+    const timeDiff = now - lastClickRef.current.time;
+
+    if (lastClickRef.current.type === 'forward' && timeDiff < 300) {
+      // Double click - skip 10s
+      skipTime(10);
+      setSkipHint('⏩ +10s');
+      lastClickRef.current = { time: 0, type: '' };
+    } else {
+      // Single click - wait to see if double click
+      lastClickRef.current = { time: now, type: 'forward' };
+      setTimeout(() => {
+        if (lastClickRef.current.type === 'forward' && Date.now() - lastClickRef.current.time >= 280) {
+          skipTime(5);
+          setSkipHint('⏩ +5s');
+          lastClickRef.current = { time: 0, type: '' };
+        }
+      }, 300);
+    }
+  };
+
+  // Long press handlers for rewind (go to beginning)
+  const handleRewindMouseDown = () => {
+    rewindTimerRef.current = setTimeout(() => {
+      goToBeginning();
+      lastClickRef.current = { time: 0, type: '' }; // Cancel click
+    }, 500);
+  };
+
+  const handleRewindMouseUp = () => {
+    if (rewindTimerRef.current) {
+      clearTimeout(rewindTimerRef.current);
+    }
+  };
+
+  const handleVolumeChange = (e) => {
+    setVolume(parseInt(e.target.value));
+  };
+
+  const getVolumeIcon = () => {
+    if (volume === 0) return <VolumeX size={14} />;
+    if (volume < 50) return <Volume size={14} />;
+    if (volume < 100) return <Volume1 size={14} />;
+    return <Volume2 size={14} />;
+  };
+
+  const getVolumeColor = () => {
+    if (volume <= 100) {
+      const hue = 120 - (volume * 0.6);
+      return `hsl(${hue}, 70%, 45%)`;
+    } else {
+      const hue = 60 - ((volume - 100) * 0.6);
+      return `hsl(${Math.max(0, hue)}, 80%, 45%)`;
+    }
+  };
+
   const formatTime = (time) => {
     if (!time || isNaN(time)) return '0:00';
     const mins = Math.floor(time / 60);
@@ -670,7 +786,7 @@ function AudioBar({ currentAudio, playlist, onSelect, onNext, onPrev }) {
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div className="h-24 bg-card/95 backdrop-blur-md border-t border-border flex items-center px-6 shrink-0 shadow-[0_-8px_30px_rgba(0,0,0,0.06)] z-30">
+    <div className="bg-card/95 backdrop-blur-md border-t border-border px-4 py-2 shrink-0 shadow-[0_-4px_20px_rgba(0,0,0,0.08)] z-30">
       <audio
         ref={audioRef}
         src={audioSrc}
@@ -681,47 +797,125 @@ function AudioBar({ currentAudio, playlist, onSelect, onNext, onPrev }) {
         onPause={() => setIsPlaying(false)}
       />
 
-      <div className="w-full max-w-5xl mx-auto flex items-center gap-6">
-        <div className="w-48 shrink-0 hidden md:block">
-          <div className="font-semibold truncate text-sm">{currentAudio.name}</div>
-          <div className="text-xs text-primary font-medium mt-0.5">Now Playing</div>
-        </div>
-
-        <div className="flex-1 flex flex-col gap-2">
-          <div className="flex items-center justify-center gap-4">
-            <button onClick={onPrev} className="p-2 text-muted-foreground hover:text-foreground">
-              <SkipBack size={20} />
-            </button>
-            <button
-              onClick={() => setIsPlaying(!isPlaying)}
-              className="w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 shadow-lg"
-            >
-              {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
-            </button>
-            <button onClick={onNext} className="p-2 text-muted-foreground hover:text-foreground">
-              <SkipForward size={20} />
-            </button>
+      <div className="w-full max-w-5xl mx-auto flex flex-col gap-2">
+        {/* Row 1: Track Info + Progress + Volume */}
+        <div className="flex items-center gap-3">
+          {/* Track Info */}
+          <div className="flex items-center gap-2 min-w-0 w-44 shrink-0">
+            <div className="w-7 h-7 bg-primary/10 rounded flex items-center justify-center text-primary shrink-0">
+              {isPlaying ? <Volume2 size={14} className="animate-pulse" /> : <Volume2 size={14} />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-medium truncate text-xs">{currentAudio.name}</div>
+              <div className="text-[10px] text-primary">Now Playing</div>
+            </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground w-10 text-right font-mono">{formatTime(currentTime)}</span>
+          {/* Progress */}
+          <div className="flex-1 flex items-center gap-2">
+            <span className="text-[10px] text-muted-foreground font-mono w-9 text-right">{formatTime(currentTime)}</span>
+            <div className="flex-1 relative group">
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={progress}
+                onChange={handleSeek}
+                className="w-full h-1 bg-secondary rounded-full appearance-none cursor-pointer accent-primary group-hover:h-1.5 transition-all"
+              />
+              {/* Skip Hint Overlay */}
+              {skipHint && (
+                <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-foreground text-background text-[10px] px-2 py-0.5 rounded font-medium animate-in fade-in zoom-in-95 duration-150">
+                  {skipHint}
+                </div>
+              )}
+            </div>
+            <span className="text-[10px] text-muted-foreground font-mono w-9">{formatTime(duration)}</span>
+          </div>
+
+          {/* Volume */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={() => setVolume(volume === 0 ? 100 : 0)}
+              className="p-1 rounded hover:bg-secondary transition-colors"
+              title={volume === 0 ? "Bật tiếng" : "Tắt tiếng"}
+            >
+              {getVolumeIcon()}
+            </button>
             <input
               type="range"
               min="0"
-              max="100"
-              value={progress}
-              onChange={handleSeek}
-              className="flex-1 h-1 bg-secondary rounded-full appearance-none cursor-pointer accent-primary"
+              max="200"
+              value={volume}
+              onChange={handleVolumeChange}
+              className="w-16 h-1 rounded-full appearance-none cursor-pointer"
+              style={{
+                background: `linear-gradient(to right, ${getVolumeColor()} 0%, ${getVolumeColor()} ${volume / 2}%, hsl(var(--secondary)) ${volume / 2}%, hsl(var(--secondary)) 100%)`
+              }}
             />
-            <span className="text-xs text-muted-foreground w-10 font-mono">{formatTime(duration)}</span>
+            <span
+              className="text-[10px] font-mono font-bold w-9 text-center"
+              style={{ color: getVolumeColor() }}
+            >
+              {volume}%
+            </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 w-32 justify-end hidden md:flex">
+        {/* Row 2: Controls */}
+        <div className="flex items-center justify-center gap-1">
+          {/* Prev Audio */}
+          <button
+            onClick={onPrev}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            title="Audio trước"
+          >
+            <SkipBack size={16} />
+          </button>
+
+          {/* Rewind: Click=5s, Double=10s, Hold=Beginning */}
+          <button
+            onClick={handleRewindClick}
+            onMouseDown={handleRewindMouseDown}
+            onMouseUp={handleRewindMouseUp}
+            onMouseLeave={handleRewindMouseUp}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors flex items-center"
+            title="Click: -5s | Double: -10s | Giữ: Về đầu"
+          >
+            <RotateCcw size={16} />
+          </button>
+
+          {/* Play/Pause */}
+          <button
+            onClick={() => setIsPlaying(!isPlaying)}
+            className="w-10 h-10 mx-2 rounded-full bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90 shadow-lg shadow-primary/25 transition-all hover:scale-105"
+          >
+            {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
+          </button>
+
+          {/* Forward: Click=5s, Double=10s */}
+          <button
+            onClick={handleForwardClick}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors flex items-center"
+            title="Click: +5s | Double: +10s"
+          >
+            <RotateCw size={16} />
+          </button>
+
+          {/* Next Audio */}
+          <button
+            onClick={onNext}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            title="Audio sau"
+          >
+            <SkipForward size={16} />
+          </button>
+
+          {/* Speed */}
           <select
             value={playbackRate}
             onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
-            className="bg-secondary text-xs rounded-lg px-2 py-1 cursor-pointer"
+            className="ml-3 bg-secondary text-[10px] rounded px-1.5 py-1 cursor-pointer font-medium hover:bg-secondary/80 transition-colors"
           >
             <option value={0.5}>0.5x</option>
             <option value={0.75}>0.75x</option>

@@ -53,15 +53,18 @@
   "build": {
     "appId": "com.learning.app",
     "productName": "Learning App",
+    "icon": "public/logo/config_language_22470",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "public/logo/**/*",
       "package.json"
     ],
     "win": {
+      "icon": "public/logo/config_language_22470.ico",
       "target": [
         {
           "target": "nsis",
@@ -79,9 +82,11 @@
       "allowToChangeInstallationDirectory": true
     },
     "mac": {
+      "icon": "public/logo/config_language_22470.png",
       "target": ["dmg", "zip"]
     },
     "linux": {
+      "icon": "public/logo/config_language_22470.png",
       "target": ["AppImage", "deb"]
     }
   }
